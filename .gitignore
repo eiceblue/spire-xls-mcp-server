@@ -1,0 +1,36 @@
+# Build and Distribution
+__pycache__/
+*.py[cod]
+build/
+dist/
+src/*.egg-info/
+
+# Development Environment
+.venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+.cursorignore
+.cursorrules
+.specstory
+
+# Testing and Linting
+.coverage
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+tests/
+
+# Project Files
+extras/
+.notes/
+logs/
+output/
+*.xlsx
+*.xls
+*.log 
+excel_files/
