@@ -49,6 +49,13 @@ $env:FASTMCP_PORT = "8080"; uv run spire-xls-mcp-server
 ```
 
 ## Integration with AI Tools
+The following visual guide illustrates the three-step process to integrate Spire.XLS MCP Server with supported AI development environments:
+
+**Step 1 and Step 2**: Start the server and configure AI tool
+![Step 1 and Step 2: Start the server and configure AI tool](https://cdn.e-iceblue.com/images/art_images/spire-xls-mcp-server-integration-steps-0.png)
+
+**Step 3**: Use Excel features through AI interface
+![Step 3: Use Excel features through AI interface](https://cdn.e-iceblue.com/images/art_images/spire-xls-mcp-server-integration-steps-1.png)
 
 ### Cursor IDE
 
