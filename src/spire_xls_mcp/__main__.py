@@ -1,14 +1,13 @@
 import asyncio
 
-from .server import run_server
+from spire_xls_mcp.server import run_server
 
 
 def main():
     """Start the Spire.Xls MCP Server."""
     try:
-        print("Spire.Xls MCP Server")
         print("---------------")
-        print("Starting server... Press Ctrl+C to exit")
+        print("Starting Spire.Xls MCP Server... Press Ctrl+C to exit")
         asyncio.run(run_server())
     except KeyboardInterrupt:
         print("\nShutting down server...")

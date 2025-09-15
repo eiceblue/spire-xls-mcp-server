@@ -3,9 +3,8 @@ from typing import Any, Dict
 
 from spire.xls import *
 
-from .workbook import get_or_create_workbook
-from .cell_utils import parse_cell_range, validate_cell_reference_regex, EnumMapper
-from .exceptions import ValidationError, FormattingError
+from spire_xls_mcp.utils.cell_utils import EnumMapper
+from spire_xls_mcp.utils.exceptions import ValidationError, FormattingError
 
 logger = logging.getLogger(__name__)
 
@@ -43,22 +42,46 @@ def format_range(
     Args:
         filepath: Path to Excel file
         sheet_name: Name of worksheet
-        start_cell: Starting cell reference
-        end_cell: Optional ending cell reference
+        cell_range: Cell range reference (e.g. "A1:B10")
         bold: Whether to make text bold
         italic: Whether to make text italic
         underline: Whether to underline text
         font_size: Font size in points
-        font_color: Font color (hex code)
-        bg_color: Background color (hex code)
+        font_color: Font color (hex code, e.g. "#FF0000")
+        bg_color: Background color (hex code, e.g. "#FFFF00")
         border_style: Border style (thin, medium, thick, double)
-        border_color: Border color (hex code)
+        border_color: Border color (hex code, e.g. "#000000")
         number_format: Excel number format string
         alignment: Text alignment (left, center, right, justify)
         wrap_text: Whether to wrap text
         merge_cells: Whether to merge the range
-        protection: Cell protection settings
-        conditional_format: Conditional formatting rules
+        protection: Cell protection settings dict with keys 'locked' and/or 'hidden'
+        conditional_format: Conditional formatting rules dict with keys:
+            - "type": Condition type, supported values:
+                - "cell"/"单元格值": Cell value condition
+                - "text"/"文本": Contains text condition
+                - "date"/"日期": Date condition
+                - "time_period"/"时间段": Time period condition
+                - "average"/"平均值": Average condition
+                - "duplicate"/"重复值": Duplicate values condition
+                - "unique"/"唯一值": Unique values condition
+                - "formula"/"公式": Formula condition
+                - "top10"/"前10项": Top/Bottom items condition
+                - "data_bar"/"数据条": Data bar condition
+                - "color_scale"/"色阶": Color scale condition
+                - "icon_set"/"图标集": Icon set condition
+            - "criteria"/"operator": Comparison operator, supported values:
+                - "greater"/"gt"/">"/"大于": Greater than
+                - "greater_or_equal"/">="/"ge"/"大于等于": Greater than or equal
+                - "less"/"lt"/"<"/"小于": Less than
+                - "less_or_equal"/"<="/"le"/"小于等于": Less than or equal
+                - "equal"/"eq"/"="/"等于": Equal
+                - "not_equal"/"ne"/"!="/"<>"/"不等于": Not equal
+            - "value"/"first_formula": First value/formula for comparison
+            - "value2"/"second_formula": Second value/formula for comparison (optional)
+            - "format": Dict with formatting to apply when condition is met:
+                - "font_color": Hex color code for font
+                - "bg_color": Hex color code for background
         
     Returns:
         Dictionary with operation status
@@ -88,7 +111,7 @@ def format_range(
             if italic:
                 style.Font.IsItalic = True
             if underline:
-                style.Font.Underline = UnderlineStyle.Continuous
+                style.Font.Underline = FontUnderlineType.Single
             if font_size:
                 style.Font.Size = font_size
             if font_color:
@@ -119,6 +142,7 @@ def format_range(
         if border_style or border_color:
             style = range_to_format.Style
             border_line_style = EnumMapper.get_border_style_enum(border_style)
+            style.Borders.LineStyle = border_line_style
             if border_color:
                 if border_color.startswith('#'):
                     border_color = border_color[1:]
@@ -128,7 +152,7 @@ def format_range(
                     b = int(border_color[4:6], 16)
                     border_color_obj = Color.FromRgb(r, g, b)
                     style.Borders.Color = border_color_obj
-            style.Borders.LineStyle = border_line_style
+
         
         # Apply number format
         if number_format:
@@ -154,8 +178,9 @@ def format_range(
             style = range_to_format.Style
             if 'locked' in protection:
                 style.Locked = protection['locked']
-            if 'hidden' in protection:
-                style.HideFormula = protection['hidden']
+            if 'hidden' in protection and protection['hidden']:
+                # Hide the area by setting the number format as ";;;".
+                range_to_format.NumberFormat = ";;;"
         
         # Apply conditional formatting
         if conditional_format:

@@ -1,9 +1,9 @@
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from spire.xls import *
 
-from .exceptions import ConversionError
+from spire_xls_mcp.utils.exceptions import ConversionError
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +51,11 @@ def convert_workbook(
                     target_sheet = ws
                     break
 
-            if target_sheet is None and (format_type == 'csv' or format_type == 'txt' or cell_range):
+            if target_sheet is None and sheet_name:
                 raise ConversionError(f"Sheet '{sheet_name}' not found")
+
+        if cell_range:
+            target_sheet.PageSetup.PrintArea = target_sheet.Range[cell_range].RangeAddressLocal
 
         # Process different format types
         if format_type == 'pdf':
@@ -82,7 +85,7 @@ def convert_workbook(
                         sheet.PageSetup.FitToPagesTall = 1
 
             # Convert to PDF
-            if sheet_name and target_sheet:
+            if sheet_name:
                 target_sheet.SaveToPdf(output_filepath)
             else:
                 wb.SaveToFile(output_filepath, FileFormat.PDF)
@@ -91,11 +94,11 @@ def convert_workbook(
             if target_sheet is None:
                 raise ConversionError("Sheet name is required for CSV/TXT conversion")
 
-            if not options or not options['delimiter'] or not options['encoding']:
-                raise ConversionError("options delimiter、encoding is required for CSV/TXT conversion")
-
-            separator = options['delimiter']
-            encoding = Encoding.GetEncoding(str(options['encoding']))
+            separator = ','
+            encoding = Encoding.GetEncoding(str('utf-8'))
+            if options:
+                separator = options.get('delimiter', ',')
+                encoding = Encoding.GetEncoding(str(options.get('encoding', 'utf-8')))
             # Convert to CSV/TXT
             target_sheet.SaveToFile(output_filepath, separator, encoding)
 
@@ -113,7 +116,7 @@ def convert_workbook(
                     html_options.ImageLocationType = ImageLocationTypes.TableRelative
 
             # Convert to HTML
-            if sheet_name and target_sheet:
+            if sheet_name:
                 target_sheet.SaveToHtml(output_filepath, html_options)
             else:
                 wb.SaveToFile(output_filepath, FileFormat.HTML)

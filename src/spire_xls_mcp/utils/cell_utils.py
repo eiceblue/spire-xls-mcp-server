@@ -56,7 +56,7 @@ def column_to_letter(column: int) -> str:
     return result
 
 
-def serialize_cell(cell):
+def serialize_cell(cell, preview_only: bool):
     """Serialize a cell to a JSON-serializable dictionary object with null checks"""
     try:
         # Basic properties
@@ -95,6 +95,8 @@ def serialize_cell(cell):
         except:
             pass
 
+        if preview_only:
+            return result
         # Style handling
         style_dict = {}
 
@@ -389,6 +391,15 @@ class EnumMapper:
         "area": ExcelChartType.Area,
         "scatter": ExcelChartType.ScatterLine,
         "doughnut": ExcelChartType.Doughnut,
+        "waterfall": ExcelChartType.WaterFall,
+        "column_stacked": ExcelChartType.ColumnStacked,
+        "column_100_percent_stacked": ExcelChartType.Column100PercentStacked,
+        "bubble": ExcelChartType.Bubble,
+        "funnel": ExcelChartType.Funnel,
+        "treemap": ExcelChartType.TreeMap,
+        "sunburst": ExcelChartType.SunBurst,
+        "histogram": ExcelChartType.Histogram,
+        "box_and_whisker": ExcelChartType.BoxAndWhisker,
     }
     # conditional format type
     CONDITION_TYPE_MAP = {
@@ -497,3 +508,4 @@ def create_spire_object(value: Any) -> Any:
                         getattr(value, 'microsecond', 0))
 
     return String(str(value))
+

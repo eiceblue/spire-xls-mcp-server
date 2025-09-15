@@ -3,7 +3,7 @@ import logging
 from typing import Dict, Any
 
 from spire.xls import *
-from .exceptions import DataError, ValidationError
+from spire_xls_mcp.utils.exceptions import DataError, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +150,7 @@ def import_from_json(
         
         # Load workbook
         workbook = Workbook()
+        workbook.Worksheets.Clear()
         if os.path.exists(excel_filepath):
             workbook.LoadFromFile(excel_filepath)
         

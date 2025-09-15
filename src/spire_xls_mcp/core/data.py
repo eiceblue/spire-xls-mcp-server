@@ -1,11 +1,11 @@
 from pathlib import Path
-from typing import Any, List, Dict
+from typing import Any, Dict
 import logging
 
 from spire.xls import *
 
-from .exceptions import DataError
-from .cell_utils import parse_cell_range, column_to_letter, serialize_cell
+from spire_xls_mcp.utils.exceptions import DataError
+from spire_xls_mcp.utils.cell_utils import parse_cell_range, column_to_letter, serialize_cell
 from .workbook import get_or_create_workbook
 
 logger = logging.getLogger(__name__)
@@ -47,24 +47,7 @@ def read_excel_range(
 
             for row in range(start_row, end_row + 1):
                 cell = sheet.Range[row, col]
-                data[col_letter][row] = serialize_cell(cell)
-
-        # If preview mode, limit data (keep first 5 columns and first 5 rows)
-        if preview_only:
-            preview_data = {}
-            col_count = 0
-            for col_letter in data:
-                if col_count >= 5:
-                    break
-                preview_data[col_letter] = {}
-                row_count = 0
-                for row in sorted(data[col_letter].keys())[:5]:
-                    preview_data[col_letter][row] = data[col_letter][row]
-                    row_count += 1
-                    if row_count >= 5:
-                        break
-                col_count += 1
-            return preview_data
+                data[col_letter][row] = serialize_cell(cell, preview_only)
 
         return data
     except DataError as e:

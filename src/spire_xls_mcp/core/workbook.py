@@ -4,8 +4,8 @@ from typing import Any
 
 from spire.xls import *
 
-from .cell_utils import column_to_letter
-from .exceptions import WorkbookError
+from spire_xls_mcp.utils.cell_utils import column_to_letter
+from spire_xls_mcp.utils.exceptions import WorkbookError
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,7 @@ def create_workbook(filepath: str, sheet_name: str = None) -> dict[str, Any]:
         wb.SaveToFile(str(save_path))
         return {
             "message": f"Created workbook: {filepath}",
-            "active_sheet": sheet_name,
-            "workbook": wb
+            "active_sheet": sheet_name
         }
     except Exception as e:
         logger.error(f"Failed to create workbook: {e}")

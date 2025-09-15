@@ -1,12 +1,15 @@
+import json
 import logging
 import sys
 import os
+import functools
 from typing import Any, List, Dict, Optional
 
 from mcp.server.fastmcp import FastMCP
 
 # Import exceptions
-from .exceptions import (
+from spire_xls_mcp.utils.exceptions import (
+    ExcelMCPError,
     ValidationError,
     WorkbookError,
     SheetError,
@@ -18,23 +21,27 @@ from .exceptions import (
     ConversionError
 )
 
-
-from .validation import (
-    validate_range_in_sheet_operation as validate_range_impl
-)
-from .chart import create_chart_in_sheet as create_chart_impl
-from .workbook import get_workbook_info
-from .data import write_data
-from .pivot import create_pivot_table as create_pivot_table_impl
-from .sheet import (
+# Import core functions
+from spire_xls_mcp.core.calculations import apply_formula as apply_formula_impl
+from spire_xls_mcp.core.chart import create_chart_in_sheet as create_chart_impl
+from spire_xls_mcp.core.conversion import convert_workbook as convert_workbook_impl
+from spire_xls_mcp.core.data import read_excel_range, write_data
+from spire_xls_mcp.core.formatting import format_range as format_range_func
+from spire_xls_mcp.core.json_operations import export_to_json as export_json_impl, import_from_json as import_json_impl
+from spire_xls_mcp.core.pivot import create_pivot_table as create_pivot_table_impl
+from spire_xls_mcp.core.sheet import (
     copy_sheet,
     delete_sheet,
     rename_sheet,
     merge_range,
     unmerge_range,
-    apply_autofilter as apply_autofilter_impl
+    copy_range_operation,
+    delete_range as delete_range_operation,
+    apply_autofilter as apply_autofilter_impl,
+    get_shape_image_base64 as get_shape_img_b64
 )
-from .conversion import convert_workbook as convert_workbook_impl
+from spire_xls_mcp.core.validation import validate_range_in_sheet_operation as validate_range_impl
+from spire_xls_mcp.core.workbook import get_workbook_info, create_workbook as create_workbook_impl, create_sheet as create_worksheet_impl
 
 # Configure logging
 logging.basicConfig(
@@ -52,9 +59,6 @@ logger = logging.getLogger("spire-xls-mcp")
 # Get Excel files path from environment or use default
 EXCEL_FILES_PATH = os.environ.get("EXCEL_FILES_PATH", "./excel_files")
 
-# # Create the directory if it doesn't exist
-# os.makedirs(EXCEL_FILES_PATH, exist_ok=True)
-
 # Initialize FastMCP server
 mcp = FastMCP(
     "spire-xls-mcp",
@@ -70,7 +74,6 @@ mcp = FastMCP(
     }
 )
 
-
 def get_excel_path(filename: str) -> str:
     """Get full path to Excel file.
     
@@ -80,15 +83,26 @@ def get_excel_path(filename: str) -> str:
     Returns:
         Full path to Excel file
     """
-    # If filename is already an absolute path, return it
-    if os.path.isabs(filename):
+    if not filename or os.path.isabs(filename):
         return filename
-
-    # Use the configured Excel files path
     return os.path.join(EXCEL_FILES_PATH, filename)
 
+def tool_exception_handler(func):
+    """A decorator to handle exceptions for all tool functions."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except ExcelMCPError as e:
+            logger.error(f"Error in tool '{func.__name__}': {e}")
+            return f"Error: {str(e)}"
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in tool '{func.__name__}': {e}")
+            raise
+    return wrapper
 
 @mcp.tool()
+@tool_exception_handler
 def apply_formula(
         filepath: str,
         sheet_name: str,
@@ -107,20 +121,12 @@ def apply_formula(
     Returns:
         str: Success message confirming formula application
     """
-    try:
-        full_path = get_excel_path(filepath)
-
-        from .calculations import apply_formula as apply_formula_impl
-        result = apply_formula_impl(full_path, sheet_name, cell, formula)
-        return result["message"]
-    except (ValidationError, CalculationError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error applying formula: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = apply_formula_impl(full_path, sheet_name, cell, formula)
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def format_range(
         filepath: str,
         sheet_name: str,
@@ -152,51 +158,68 @@ def format_range(
         underline (bool, optional): Whether to apply underline formatting
         font_size (int, optional): Font size to apply
         font_color (str, optional): Font color as hex code (e.g., "#FF0000")
-        bg_color (str, optional): Background color as hex code
-        alignment (str, optional): Text alignment (e.g., "center", "left", "right")
+        bg_color (str, optional): Background color as hex code (e.g., "#FFFF00")
+        border_style (str, optional): Border style (thin, medium, thick, double)
+        border_color (str, optional): Border color as hex code (e.g., "#000000")
         number_format (str, optional): Excel number format code
-        border_style (str, optional): Border style for the range
-        border_color (str, optional): Border color as hex code
+        alignment (str, optional): Text alignment (left, center, right, justify)
         wrap_text (bool, optional): Whether to enable text wrapping
         merge_cells (bool, optional): Whether to merge the cells in the range
-        protection (dict, optional): Cell protection settings
-        conditional_format (dict, optional): Conditional formatting rules
+        protection (dict, optional): Cell protection settings dict with keys 'locked' and/or 'hidden'
+        conditional_format (dict, optional): Conditional formatting rules dict with keys:
+            - "type": Condition type, supported values:
+                - "cell"/"单元格值": Cell value condition
+                - "text"/"文本": Contains text condition
+                - "date"/"日期": Date condition
+                - "time_period"/"时间段": Time period condition
+                - "average"/"平均值": Average condition
+                - "duplicate"/"重复值": Duplicate values condition
+                - "unique"/"唯一值": Unique values condition
+                - "formula"/"公式": Formula condition
+                - "top10"/"前10项": Top/Bottom items condition
+                - "data_bar"/"数据条": Data bar condition
+                - "color_scale"/"色阶": Color scale condition
+                - "icon_set"/"图标集": Icon set condition
+            - "criteria"/"operator": Comparison operator, supported values:
+                - "greater"/"gt"/">"/"大于": Greater than
+                - "greater_or_equal"/">="/"ge"/"大于等于": Greater than or equal
+                - "less"/"lt"/"<"/"小于": Less than
+                - "less_or_equal"/"<="/"le"/"小于等于": Less than or equal
+                - "equal"/"eq"/"="/"/"等于": Equal
+                - "not_equal"/"ne"/"!="/"<>"/"不等于": Not equal
+            - "value"/"first_formula": First value/formula for comparison
+            - "value2"/"second_formula": Second value/formula for comparison (optional)
+            - "format": Dict with formatting to apply when condition is met:
+                - "font_color": Hex color code for font
+                - "bg_color": Hex color code for background
 
     Returns:
         str: Success message confirming formatting was applied
     """
-    try:
-        full_path = get_excel_path(filepath)
-        from .formatting import format_range as format_range_func
-
-        result = format_range_func(
-            filepath=full_path,
-            sheet_name=sheet_name,
-            cell_range=cell_range,
-            bold=bold,
-            italic=italic,
-            underline=underline,
-            font_size=font_size,
-            font_color=font_color,
-            bg_color=bg_color,
-            border_style=border_style,
-            border_color=border_color,
-            number_format=number_format,
-            alignment=alignment,
-            wrap_text=wrap_text,
-            merge_cells=merge_cells,
-            protection=protection,
-            conditional_format=conditional_format
-        )
-        return "Range formatted successfully"
-    except (ValidationError, FormattingError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error formatting range: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = format_range_func(
+        filepath=full_path,
+        sheet_name=sheet_name,
+        cell_range=cell_range,
+        bold=bold,
+        italic=italic,
+        underline=underline,
+        font_size=font_size,
+        font_color=font_color,
+        bg_color=bg_color,
+        border_style=border_style,
+        border_color=border_color,
+        number_format=number_format,
+        alignment=alignment,
+        wrap_text=wrap_text,
+        merge_cells=merge_cells,
+        protection=protection,
+        conditional_format=conditional_format
+    )
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def read_data_from_excel(
         filepath: str,
         sheet_name: str,
@@ -218,19 +241,14 @@ def read_data_from_excel(
     Returns:
         dict: Column-first nested dictionary with cell data
     """
-    try:
-        full_path = get_excel_path(filepath)
-        from .data import read_excel_range
-        result = read_excel_range(full_path, sheet_name, cell_range, preview_only)
-        if not result:
-            return "No data found in specified range"
-        return result
-    except Exception as e:
-        logger.error(f"Error reading data: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = read_excel_range(full_path, sheet_name, cell_range, preview_only)
+    if not result:
+        return "No data found in specified range"
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def write_data_to_excel(
         filepath: str,
         sheet_name: str,
@@ -249,18 +267,12 @@ def write_data_to_excel(
     Returns:
         str: Success message confirming data was written
     """
-    try:
-        full_path = get_excel_path(filepath)
-        result = write_data(full_path, sheet_name, data, start_cell)
-        return result["message"]
-    except (ValidationError, DataError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error writing data: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = write_data(full_path, sheet_name, data, start_cell)
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def create_workbook(filepath: str, sheet_name: str = None) -> str:
     """
     Creates a new Excel workbook.
@@ -272,19 +284,12 @@ def create_workbook(filepath: str, sheet_name: str = None) -> str:
     Returns:
         str: Success message with the created workbook path
     """
-    try:
-        full_path = get_excel_path(filepath)
-        from .workbook import create_workbook as create_workbook_impl
-        result = create_workbook_impl(full_path, sheet_name)
-        return f"Created workbook at {full_path}"
-    except WorkbookError as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error creating workbook: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = create_workbook_impl(full_path, sheet_name)
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def create_worksheet(filepath: str, sheet_name: str) -> str:
     """
     Creates a new worksheet in an existing workbook.
@@ -296,80 +301,75 @@ def create_worksheet(filepath: str, sheet_name: str) -> str:
     Returns:
         str: Success message confirming sheet creation
     """
-    try:
-        full_path = get_excel_path(filepath)
-        from .workbook import create_sheet as create_worksheet_impl
-        result = create_worksheet_impl(full_path, sheet_name)
-        return result["message"]
-    except (ValidationError, WorkbookError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error creating worksheet: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = create_worksheet_impl(full_path, sheet_name)
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def create_chart(
-        filepath: str,
-        sheet_name: str,
+        input_filepath: str,
+        output_filepath: Optional[str],
+        data_sheet_name: Optional[str],
+        chart_sheet_name: str,
         data_range: str,
         chart_type: str,
         target_cell: str,
-        title: str = "",
-        x_axis: str = "",
-        y_axis: str = "",
-        style: Optional[Dict[str, Any]] = None
+        chart_options: Optional[Dict[str, Any]] = None
 ) -> str:
     """
     Creates a chart in a worksheet.
 
     Parameters:
-        filepath (str): Path to the Excel file.
-        sheet_name (str): Name of the worksheet. If the sheet does not exist, it will be created automatically.
-        data_range (str): Range of cells containing data for the chart (e.g., "A1:B10").
-        chart_type (str): Type of chart to create (e.g., "column", "line", "pie", "bar", "scatter", etc. See EnumMapper for supported types).
+        input_filepath (str): Path to the input Excel file.
+        output_filepath (str,optional): Path to the output Excel file,default use input_filepath.
+        data_sheet_name (str,optional): Name of the worksheet containing the data,default use chart_sheet_name.
+        chart_sheet_name (str): Name of the worksheet where the chart will be inserted.
+        data_range (str): Range of cells containing data for the chart (e.g., "A1:B10"). This is used for charts with a single data source and is ignored if `series` is provided in `chart_options`.
+        chart_type (str): Type of chart to create ("column", "line", "pie", "bar", "scatter", 
+        "doughnut", "area", "waterfall", "column_stacked", "column_100_percent_stacked", 
+        "bubble", "funnel", "treemap", "sunburst", "histogram", "box_and_whisker").
         target_cell (str): Cell where the top-left corner of the chart will be positioned (e.g., "D5").
-        title (str, optional): Chart title. Default is an empty string.
-        x_axis (str, optional): X-axis title. Default is an empty string.
-        y_axis (str, optional): Y-axis title. Default is an empty string.
-        style (dict, optional): Dictionary with chart style settings. Supported keys include:
-            - legend_position: Position of the legend ("right", "left", "top", "bottom").
-            - has_legend: Whether to display the legend (bool).
-            - has_data_labels: Whether to display data labels for the first series (bool).
-            - width: Chart width in pixels (default 480).
-            - height: Chart height in pixels (default 300).
+        chart_options (dict, optional): Dictionary with chart options. Supported keys include:
+            - title (str): Chart title.
+            - axis_titles (dict): A dictionary for axis titles, e.g., `{"x_axis_title": "X-Axis", "y_axis_title": "Y-Axis"}`.
+            - series (list[dict]): A list of data series for multi-series charts. Each dict can have `name`, `values`, and `category_labels`.
+            - category_labels (str): A common range for category labels for all series.
+            - bubbles (str): range of the bubble chart.
+            - style (dict): Chart style settings:
+                - legend_position: "right", "left", "top", "bottom".
+                - has_legend: bool.
+                - has_data_labels: bool.
+                - width: Chart width in pixels.
+                - height: Chart height in pixels.
 
     Returns:
         str: Success message, e.g., "Chart created successfully".
-
-    Raises:
-        ChartError: If chart creation fails or parameters are invalid.
     """
-    try:
-        full_path = get_excel_path(filepath)
-        result = create_chart_impl(
-            filepath=full_path,
-            sheet_name=sheet_name,
-            data_range=data_range,
-            chart_type=chart_type,
-            target_cell=target_cell,
-            title=title,
-            x_axis=x_axis,
-            y_axis=y_axis,
-            style=style
-        )
-        return result["message"]
-    except (ValidationError, ChartError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error creating chart: {e}")
-        raise
-
+    input_full_path = get_excel_path(input_filepath)
+    output_full_path = get_excel_path(output_filepath) if output_filepath else input_full_path
+    if data_sheet_name is None:
+        data_sheet_name = chart_sheet_name
+        
+    result = create_chart_impl(
+        input_filepath=input_full_path,
+        output_filepath=output_full_path,
+        data_sheet_name=data_sheet_name,
+        chart_sheet_name=chart_sheet_name,
+        data_range=data_range,
+        chart_type=chart_type,
+        target_cell=target_cell,
+        chart_options=chart_options
+    )
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def create_pivot_table(
-        filepath: str,
-        sheet_name: str,
+        input_filepath: str,
+        output_filepath: str,
+        data_sheet_name: str,
+        pivot_sheet_name: str,
         pivot_name: str,
         data_range: str,
         locate_range: str,
@@ -382,71 +382,66 @@ def create_pivot_table(
     Creates a pivot table in a worksheet.
 
     Parameters:
-        filepath (str): Path to the Excel file
-        sheet_name (str): Name of the source worksheet
-        pivot_name (str): Name for the pivot table
+        input_filepath (str): Path to the input Excel file.
+        output_filepath (str): Path to the output Excel file.
+        data_sheet_name (str): Name of the worksheet containing the source data.
+        pivot_sheet_name (str): Name of the worksheet where the pivot table will be inserted.        pivot_name (str): Name for the pivot table
         data_range (str): Range containing source data (e.g., "A1:D10")
         locate_range (str): Range where the pivot table will be placed
         rows (list): List of field names to use as row labels
         values (dict): Dictionary mapping field names to aggregation functions
             Key: Field name
-            Value: Aggregation function ("sum", "count", "average", "max", "min", etc.)
+            Value: Aggregation function ("sum", "count", "average", "max", "min",)
         columns (list, optional): List of field names to use as column labels
-        agg_func (str, optional): Default aggregation function ("sum", "count", etc.)
+        agg_func (str, optional): Default aggregation function ("sum", "count", "average","min", "max".)
 
     Returns:
         str: Success message confirming pivot table creation
     """
-    try:
-        full_path = get_excel_path(filepath)
-        result = create_pivot_table_impl(
-            filepath=full_path,
-            sheet_name=sheet_name,
-            pivot_name=pivot_name,
-            data_range=data_range,
-            locate_range=locate_range,
-            rows=rows,
-            values=values,
-            columns=columns or [],
-            agg_func=agg_func
-        )
-        return result["message"]
-    except (ValidationError, PivotError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error creating pivot table: {e}")
-        raise
-
+    input_full_path = get_excel_path(input_filepath)
+    output_full_path = get_excel_path(output_filepath)
+    result = create_pivot_table_impl(
+        input_filepath=input_full_path,
+        output_filepath=output_full_path,
+        data_sheet_name=data_sheet_name,
+        pivot_sheet_name=pivot_sheet_name,
+        pivot_name=pivot_name,
+        data_range=data_range,
+        locate_range=locate_range,
+        rows=rows,
+        values=values,
+        columns=columns or [],
+        agg_func=agg_func
+    )
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def copy_worksheet(
         filepath: str,
         source_sheet: str,
-        target_sheet: str
+        target_sheet: str,
+        target_filepath: str = None
 ) -> str:
     """
-    Copies a worksheet within the same workbook.
+    Copies a worksheet within the same workbook or to another workbook.
 
     Parameters:
-        filepath (str): Path to the Excel file
+        filepath (str): Path to the source Excel file
         source_sheet (str): Name of the worksheet to copy
         target_sheet (str): Name for the new worksheet copy
+        target_filepath (str, optional): Path to the target Excel file if copying to another workbook
 
     Returns:
         str: Success message confirming sheet was copied
     """
-    try:
-        full_path = get_excel_path(filepath)
-        result = copy_sheet(full_path, source_sheet, target_sheet)
-        return result["message"]
-    except (ValidationError, SheetError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error copying worksheet: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    target_path = get_excel_path(target_filepath) if target_filepath else full_path
+    result = copy_sheet(full_path, source_sheet, target_sheet, target_path)
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def delete_worksheet(
         filepath: str,
         sheet_name: str
@@ -461,18 +456,12 @@ def delete_worksheet(
     Returns:
         str: Success message confirming worksheet deletion
     """
-    try:
-        full_path = get_excel_path(filepath)
-        result = delete_sheet(full_path, sheet_name)
-        return result["message"]
-    except (ValidationError, SheetError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error deleting worksheet: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = delete_sheet(full_path, sheet_name)
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def rename_worksheet(
         filepath: str,
         old_name: str,
@@ -489,18 +478,12 @@ def rename_worksheet(
     Returns:
         str: Success message confirming the rename operation
     """
-    try:
-        full_path = get_excel_path(filepath)
-        result = rename_sheet(full_path, old_name, new_name)
-        return result["message"]
-    except (ValidationError, SheetError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error renaming worksheet: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = rename_sheet(full_path, old_name, new_name)
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def get_workbook_metadata(
         filepath: str,
         include_ranges: bool = False
@@ -520,18 +503,12 @@ def get_workbook_metadata(
             - modified: Last modification timestamp
             - used_ranges: Dictionary mapping sheet names to their used data ranges (if include_ranges=True)
     """
-    try:
-        full_path = get_excel_path(filepath)
-        result = get_workbook_info(full_path, include_ranges=include_ranges)
-        return str(result)
-    except WorkbookError as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error getting workbook metadata: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = get_workbook_info(full_path, include_ranges=include_ranges)
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def merge_cells(filepath: str,
                 sheet_name: str,
                 cell_range_list: List[str]) -> str:
@@ -546,18 +523,12 @@ def merge_cells(filepath: str,
     Returns:
         str: Success message confirming cells were merged
     """
-    try:
-        full_path = get_excel_path(filepath)
-        result = merge_range(full_path, sheet_name, cell_range_list)
-        return result["message"]
-    except (ValidationError, SheetError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error merging cells: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = merge_range(full_path, sheet_name, cell_range_list)
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def unmerge_cells(filepath: str, sheet_name: str, cell_range: str) -> str:
     """
     Unmerges a range of previously merged cells.
@@ -570,57 +541,48 @@ def unmerge_cells(filepath: str, sheet_name: str, cell_range: str) -> str:
     Returns:
         str: Success message confirming cells were unmerged
     """
-    try:
-        full_path = get_excel_path(filepath)
-        result = unmerge_range(full_path, sheet_name, cell_range)
-        return result["message"]
-    except (ValidationError, SheetError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error unmerging cells: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = unmerge_range(full_path, sheet_name, cell_range)
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def copy_range(
         filepath: str,
         sheet_name: str,
         source_range: str,
         target_range: str,
-        target_sheet: str = None
+        target_sheet: str = None,
+        target_filepath: str = None
 ) -> str:
     """
-    Copies a range of cells to another location.
+    Copies a range of cells to another location within the same workbook or to another workbook.
 
     Parameters:
-        filepath (str): Path to the Excel file
+        filepath (str): Path to the source Excel file
         sheet_name (str): Name of the source worksheet
         source_range (str): Range of cells to copy (e.g., "A1:C5")
         target_range (str): Target range where cells will be copied
         target_sheet (str, optional): Name of the target worksheet if different from source
+        target_filepath (str, optional): Path to the target Excel file if copying to another workbook
 
     Returns:
         str: Success message confirming range was copied
     """
-    try:
-        full_path = get_excel_path(filepath)
-        from .sheet import copy_range_operation
-        result = copy_range_operation(
-            full_path,
-            sheet_name,
-            source_range,
-            target_range,
-            target_sheet
-        )
-        return result["message"]
-    except (ValidationError, SheetError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error copying range: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    target_path = get_excel_path(target_filepath) if target_filepath else full_path
+    result = copy_range_operation(
+        full_path,
+        sheet_name,
+        source_range,
+        target_range,
+        target_sheet,
+        target_path
+    )
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def delete_range(
         filepath: str,
         sheet_name: str,
@@ -639,24 +601,17 @@ def delete_range(
     Returns:
         str: Success message describing the deletion and shift operation
     """
-    try:
-        full_path = get_excel_path(filepath)
-        from .sheet import delete_range as delete_range_operation
-        result = delete_range_operation(
-            full_path,
-            sheet_name,
-            cell_range,
-            shift_direction
-        )
-        return result["message"]
-    except (ValidationError, SheetError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error deleting range: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = delete_range_operation(
+        full_path,
+        sheet_name,
+        cell_range,
+        shift_direction
+    )
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def apply_autofilter(
         filepath: str,
         sheet_name: str,
@@ -673,10 +628,13 @@ def apply_autofilter(
         filter_criteria (dict, optional): Dictionary of filter criteria
             Key: Column index (0-based)
             Value: Dictionary with filter settings:
-                "type": "value", "top10", "custom", "dynamic"
+                "type": "value", "top10", "custom"
                 "values": List of values for "value" type
                 "operator": "<", ">", "=", ">=", "<=", "<>" for "custom" type
                 "criteria": Criteria value for "custom" type
+                "operator2": Second operator for "custom" type when using AND/OR conditions
+                "criteria2": Second criteria value for "custom" type when using AND/OR conditions
+                "is_and": Boolean indicating whether to use AND (True) or OR (False) for dual conditions
                 "percent": True/False for "top10" type
                 "count": Count for "top10" type
                 "bottom": True/False for "top10" type
@@ -684,23 +642,17 @@ def apply_autofilter(
     Returns:
         str: Success or error message
     """
-    try:
-        full_path = get_excel_path(filepath)
-        result = apply_autofilter_impl(
-            full_path,
-            sheet_name,
-            cell_range,
-            filter_criteria
-        )
-        return result["message"]
-    except (ValidationError, SheetError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error applying autofilter: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = apply_autofilter_impl(
+        full_path,
+        sheet_name,
+        cell_range,
+        filter_criteria
+    )
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def validate_excel_range(
         filepath: str,
         sheet_name: str,
@@ -717,18 +669,12 @@ def validate_excel_range(
     Returns:
         str: Validation result including details about the actual data range in the sheet
     """
-    try:
-        full_path = get_excel_path(filepath)
-        result = validate_range_impl(full_path, sheet_name, cell_range)
-        return result["message"]
-    except ValidationError as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error validating range: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = validate_range_impl(full_path, sheet_name, cell_range)
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def export_to_json(
         filepath: str,
         sheet_name: str,
@@ -755,28 +701,21 @@ def export_to_json(
     Returns:
         str: Success message with the path to the created JSON file
     """
-    try:
-        full_path = get_excel_path(filepath)
-        output_path = get_excel_path(output_filepath)
-        
-        from .json_operations import export_to_json as export_json_impl
-        result = export_json_impl(
-            full_path,
-            sheet_name,
-            cell_range,
-            output_path,
-            include_headers,
-            options
-        )
-        return result["message"]
-    except (ValidationError, DataError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error exporting to JSON: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    output_path = get_excel_path(output_filepath)
+    
+    result = export_json_impl(
+        full_path,
+        sheet_name,
+        cell_range,
+        output_path,
+        include_headers,
+        options
+    )
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def import_from_json(
         json_filepath: str,
         excel_filepath: str,
@@ -802,28 +741,21 @@ def import_from_json(
     Returns:
         str: Success message with the path to the updated Excel file
     """
-    try:
-        json_path = get_excel_path(json_filepath)
-        excel_path = get_excel_path(excel_filepath)
-        
-        from .json_operations import import_from_json as import_json_impl
-        result = import_json_impl(
-            json_path,
-            excel_path,
-            sheet_name,
-            start_cell,
-            create_sheet,
-            options
-        )
-        return result["message"]
-    except (ValidationError, DataError) as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error importing from JSON: {e}")
-        raise
-
+    json_path = get_excel_path(json_filepath)
+    excel_path = get_excel_path(excel_filepath)
+    
+    result = import_json_impl(
+        json_path,
+        excel_path,
+        sheet_name,
+        start_cell,
+        create_sheet,
+        options
+    )
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def convert_excel(
         filepath: str,
         output_filepath: str,
@@ -867,27 +799,22 @@ def convert_excel(
     Returns:
         str: Success message or error description
     """
-    try:
-        full_path = get_excel_path(filepath)
-        output_path = get_excel_path(output_filepath)
-        
-        result = convert_workbook_impl(
-            filepath=full_path,
-            output_filepath=output_path,
-            format_type=format_type,
-            options=options,
-            sheet_name=sheet_name,
-            cell_range=cell_range
-        )
-        
-        return result["message"]
-    except ConversionError as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error converting file: {e}")
-        raise ConversionError(f"Failed to convert Excel file: {str(e)}")
+    full_path = get_excel_path(filepath)
+    output_path = get_excel_path(output_filepath)
+    
+    result = convert_workbook_impl(
+        filepath=full_path,
+        output_filepath=output_path,
+        format_type=format_type,
+        options=options,
+        sheet_name=sheet_name,
+        cell_range=cell_range
+    )
+    
+    return json.dumps(result)
 
 @mcp.tool()
+@tool_exception_handler
 def get_shape_image_base64(
         filepath: str,
         sheet_name: str,
@@ -909,19 +836,14 @@ def get_shape_image_base64(
     Note: Either shape_name or shape_index must be provided. If the worksheet has no 
     shapes or the specified shape doesn't exist, an error will be returned.
     """
-    try:
-        full_path = get_excel_path(filepath)
-        from .sheet import get_shape_image_base64 as get_shape_img_b64
-        return get_shape_img_b64(
-            full_path,
-            sheet_name,
-            shape_name,
-            shape_index
-        )
-    except Exception as e:
-        logger.error(f"Error getting shape image base64: {e}")
-        raise
-
+    full_path = get_excel_path(filepath)
+    result = get_shape_img_b64(
+        full_path,
+        sheet_name,
+        shape_name,
+        shape_index
+    )
+    return json.dumps(result)
 
 async def run_server():
     """Run the Spire.Xls MCP Server."""

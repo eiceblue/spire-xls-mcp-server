@@ -1,23 +1,34 @@
 import logging
 from typing import Any
 import base64
+import os
 
 from spire.xls import *
 
-from .cell_utils import parse_cell_range, column_to_letter, EnumMapper, create_spire_object
-from .exceptions import SheetError, ValidationError
+from spire_xls_mcp.utils.cell_utils import parse_cell_range, column_to_letter, EnumMapper, create_spire_object
+from spire_xls_mcp.utils.exceptions import SheetError, ValidationError
 
 logger = logging.getLogger(__name__)
 
 
-def copy_sheet(filepath: str, source_sheet: str, target_sheet: str) -> dict[str, Any]:
-    """Copy a worksheet within the same workbook."""
+def copy_sheet(filepath: str, source_sheet: str, target_sheet: str, target_filepath: str = None) -> dict[str, Any]:
+    """Copy a worksheet within the same workbook or to another workbook.
+    
+    Args:
+        filepath: Path to source Excel file
+        source_sheet: Name of worksheet to copy
+        target_sheet: Name for the new worksheet copy
+        target_filepath: Path to target Excel file if copying to another workbook
+        
+    Returns:
+        Dictionary with operation status
+    """
     try:
-        wb = Workbook()
-        wb.LoadFromFile(filepath)
+        wb_source = Workbook()
+        wb_source.LoadFromFile(filepath)
 
         source = None
-        for ws in wb.Worksheets:
+        for ws in wb_source.Worksheets:
             if ws.Name == source_sheet:
                 source = ws
                 break
@@ -25,16 +36,35 @@ def copy_sheet(filepath: str, source_sheet: str, target_sheet: str) -> dict[str,
         if source is None:
             raise SheetError(f"Source sheet '{source_sheet}' not found")
 
-        for ws in wb.Worksheets:
-            if ws.Name == target_sheet:
-                raise SheetError(f"Target sheet '{target_sheet}' already exists")
+        if target_filepath is None or target_filepath == filepath:
+            for ws in wb_source.Worksheets:
+                if ws.Name == target_sheet:
+                    raise SheetError(f"Target sheet '{target_sheet}' already exists")
 
-        # Copy sheet
-        new_sheet = wb.Worksheets.AddCopy(source)
-        new_sheet.Name = target_sheet
+            new_sheet = wb_source.Worksheets.AddCopy(source)
+            new_sheet.Name = target_sheet
 
-        wb.SaveToFile(filepath)
-        return {"message": f"Sheet '{source_sheet}' copied to '{target_sheet}'"}
+            wb_source.SaveToFile(filepath)
+            return {"message": f"Sheet '{source_sheet}' copied to '{target_sheet}' within the same workbook"}
+        else:
+
+            if not os.path.exists(target_filepath):
+                wb_target = Workbook()
+                wb_target.Worksheets.Clear()
+            else:
+                wb_target = Workbook()
+                wb_target.LoadFromFile(target_filepath)
+
+            for ws in wb_target.Worksheets:
+                if ws.Name == target_sheet:
+                    raise SheetError(f"Target sheet '{target_sheet}' already exists in target workbook")
+
+            new_sheet = wb_target.Worksheets.AddCopy(source)
+            new_sheet.Name = target_sheet
+
+            wb_target.SaveToFile(target_filepath)
+
+            return {"message": f"Sheet '{source_sheet}' copied to '{target_sheet}' in workbook '{target_filepath}'"}
     except SheetError as e:
         logger.error(str(e))
         raise
@@ -284,29 +314,73 @@ def copy_range_operation(
         sheet_name: str,
         source_range: str,
         target_range: str,
-        target_sheet: str = None
+        target_sheet: str = None,
+        target_filepath: str = None
 ) -> dict:
-    """Copy a range of cells to another location."""
+    """Copy a range of cells to another location within the same workbook or to another workbook.
+    
+    Args:
+        filepath: Path to source Excel file
+        sheet_name: Name of source worksheet
+        source_range: Range of cells to copy (e.g. "A1:C5")
+        target_range: Target range where cells will be copied
+        target_sheet: Name of target worksheet if different from source
+        target_filepath: Path to target Excel file if copying to another workbook
+        
+    Returns:
+        Dictionary with operation status
+    """
     try:
-        wb = Workbook()
-        wb.LoadFromFile(filepath)
-        sheet = None
-        for ws in wb.Worksheets:
-            if ws.Name == sheet_name:
-                sheet = ws
-                break
+        wb_source = Workbook()
+        wb_source.LoadFromFile(filepath)
 
-        if sheet is None:
+        if sheet_name not in [ws.Name for ws in wb_source.Worksheets]:
             logger.error(f"Sheet '{sheet_name}' not found")
             raise ValidationError(f"Sheet '{sheet_name}' not found")
 
-        source_ws = wb.Worksheets[sheet_name]
-        target_ws = wb.Worksheets[target_sheet] if target_sheet else source_ws
+        source_ws = wb_source.Worksheets[sheet_name]
 
-        source_ws.Range[source_range].Copy(target_ws.Range[target_range], True, True)
+        if target_filepath is None or target_filepath == filepath:
+            target_ws = source_ws
+            if target_sheet:
+                if target_sheet not in [ws.Name for ws in wb_source.Worksheets]:
+                    logger.error(f"Target sheet '{target_sheet}' not found")
+                    raise ValidationError(f"Target sheet '{target_sheet}' not found")
+                target_ws = wb_source.Worksheets[target_sheet]
 
-        wb.SaveToFile(filepath)
-        return {"message": f"Range copied successfully"}
+            source_ws.Range[source_range].Copy(target_ws.Range[target_range], True, True)
+
+            wb_source.SaveToFile(filepath)
+
+            return {"message": f"Range copied successfully within the same workbook"}
+        else:
+            wb_target = Workbook()
+            if not os.path.exists(target_filepath):
+                wb_target.Worksheets.Clear()
+            else:
+                wb_target.LoadFromFile(target_filepath)
+
+            target_ws = None
+            if target_sheet:
+                for ws in wb_target.Worksheets:
+                    if ws.Name == target_sheet:
+                        target_ws = ws
+                        break
+                if target_ws is None:
+                    target_ws = wb_target.Worksheets.Add(target_sheet)
+            else:
+                if wb_target.Worksheets.Count == 0:
+                    target_ws = wb_target.Worksheets.Add("Sheet1")
+                else:
+                    target_ws = wb_target.Worksheets[0]
+
+            source_range_obj = source_ws.Range[source_range]
+            target_range_obj = target_ws.Range[target_range]
+            source_range_obj.Copy(target_range_obj, True, True)
+
+            wb_target.SaveToFile(target_filepath)
+
+            return {"message": f"Range copied successfully to workbook '{target_filepath}'"}
 
     except (ValidationError, SheetError):
         raise
@@ -339,51 +413,76 @@ def apply_autofilter(
         # Load workbook
         workbook = Workbook()
         workbook.LoadFromFile(filepath)
-        
+
         # Ensure worksheet exists
         if sheet_name not in [sheet.Name for sheet in workbook.Worksheets]:
             raise SheetError(f"Worksheet '{sheet_name}' does not exist")
-        
+
         sheet = workbook.Worksheets[sheet_name]
-        
+
         # Apply auto filter
-        try:
-            auto_filters = sheet.AutoFilters
-            auto_filters.Range = sheet.Range[cell_range]
-            if filter_criteria:
-                for col_index, criteria in filter_criteria.items():
-                    filter_column = auto_filters[col_index]
-                    
-                    if criteria.get("type") == "value":
-                        filter_values = criteria.get("values", [])
-                        for value in filter_values:
-                            auto_filters.AddFilter(filter_column, str(value))
-                    
-                    elif criteria.get("type") == "custom":
-                        operator = criteria.get("operator")
-                        criteria_value = criteria.get("criteria")
-                        filter_operator = EnumMapper.get_filter_operator_enum(operator)
-                        
-                        spire_value = create_spire_object(criteria_value)
+        auto_filters = sheet.AutoFilters
+        auto_filters.Range = sheet.Range[cell_range]
+        if filter_criteria:
+            for col_index, criteria in filter_criteria.items():
+                filter_column = auto_filters[col_index]
+                if criteria.get("type") is None:
+                    raise SheetError("filter type can not be None")
+
+                filter_type = criteria.get("type")
+                if filter_type == "value":
+                    filter_values = criteria.get("values", [])
+                    for value in filter_values:
+                        auto_filters.AddFilter(filter_column, str(value))
+
+                elif filter_type == "custom":
+                    operator = criteria.get("operator")
+                    criteria_value = criteria.get("criteria")
+                    filter_operator = EnumMapper.get_filter_operator_enum(operator)
+                    spire_value = create_spire_object(criteria_value)
+
+                    # 检查是否有第二个条件
+                    operator2 = criteria.get("operator2")
+                    criteria_value2 = criteria.get("criteria2")
+                    is_and = criteria.get("is_and", True)  # 默认使用AND逻辑
+
+                    if operator2 and criteria_value2:
+                        # 应用双条件筛选
+                        filter_operator2 = EnumMapper.get_filter_operator_enum(operator2)
+                        spire_value2 = create_spire_object(criteria_value2)
+                        auto_filters.CustomFilter(
+                            filter_column,
+                            filter_operator,
+                            spire_value,
+                            is_and,
+                            filter_operator2,
+                            spire_value2
+                        )
+                    else:
+                        # 应用单条件筛选
                         auto_filters.CustomFilter(filter_column, filter_operator, spire_value)
 
-                    elif criteria.get("type") == "top10":
-                        count = criteria.get("count", 10)
-                        percent = criteria.get("percent", False)
-                        bottom = criteria.get("bottom", False)
+                elif filter_type == "top10":
+                    count = criteria.get("count", 10)
+                    percent = criteria.get("percent", False)
+                    bottom = criteria.get("bottom", False)
 
-                        auto_filters.FilterTop10(filter_column, not bottom, percent, count)
-                    auto_filters.Filter()
-        except Exception as e:
-            raise ValidationError(f"Error applying autofilter: {str(e)}")
-        
+                    auto_filters.FilterTop10(filter_column, not bottom, percent, count)
+
+                else:
+                    raise SheetError(f"not supported filter type : {filter_type}")
+
+                auto_filters.Filter()
+
         # Save workbook
         workbook.SaveToFile(filepath)
         workbook.Dispose()
-        
+
         return {"message": "Autofilter successfully applied"}
+    except SheetError as e:
+        raise SheetError(f"Error applying filter: {e}")
     except Exception as e:
-        raise SheetError(f"Failed to apply autofilter: {str(e)}")
+        raise e
 
 
 def get_shape_image_base64(filepath, sheet_name, shape_name=None, shape_index=None):
